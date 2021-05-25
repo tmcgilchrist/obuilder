@@ -73,7 +73,7 @@ module type SANDBOX = sig
     string ->
     (unit, [`Cancelled | `Msg of string]) Lwt_result.t
   (** [run ~cancelled t config dir] runs the operation [config] in a sandbox with root
-      filesystem [rootfs].
+      filesystem [dir].
       @param cancelled Resolving this kills the process (and returns [`Cancelled]).
       @param stdin Passed to child as its standard input.
       @param log Used for child's stdout and stderr.

@@ -2,8 +2,8 @@ open Lwt.Infix
 
 let ( / ) = Filename.concat
 
-module Sandbox = Obuilder.Runc_sandbox
-module Fetcher = Obuilder.Docker
+module Runc_sandbox = Obuilder.Runc_sandbox
+module Docker_sandbox = Obuilder.Docker_sandbox
 
 type builder = Builder : (module Obuilder.BUILDER with type t = 'a) * 'a -> builder
 
@@ -14,11 +14,20 @@ let log tag msg =
   | `Output -> output_string stdout msg; flush stdout
 
 let create_builder spec conf =
-  Obuilder.Store_spec.to_store spec >>= fun (Store ((module Store), store)) ->
-  let module Builder = Obuilder.Builder(Store)(Sandbox)(Fetcher) in
-  Sandbox.create ~state_dir:(Store.state_dir store / "sandbox") conf >|= fun sandbox ->
+  let open Obuilder in
+  Store_spec.to_store spec >>= fun (Store ((module Store), store)) ->
+  let module Builder = Builder (Store) (Runc_sandbox) (Docker_extract) in
+  Runc_sandbox.create ~state_dir:(Store.state_dir store / "sandbox") conf >|= fun sandbox ->
   let builder = Builder.v ~store ~sandbox in
   Builder ((module Builder), builder)
+
+let create_docker_builder path clean conf =
+  let open Obuilder in
+  let module Builder = Docker_builder in
+  Docker_store.create ~clean path >>= fun store ->
+  Docker_sandbox.create ~clean ~state_dir:(Docker_store.state_dir store / "sandbox") conf >|= fun sandbox ->
+  let builder = Docker_builder.v ~store ~sandbox in
+  Builder ((module Docker_builder), builder)
 
 let read_whole_file path =
   let ic = open_in_bin path in
@@ -26,9 +35,18 @@ let read_whole_file path =
   let len = in_channel_length ic in
   really_input_string ic len
 
-let build () store spec conf src_dir secrets =
+let build () store docker_backend docker_clean spec runc_conf docker_conf src_dir secrets =
   Lwt_main.run begin
-    create_builder store conf >>= fun (Builder ((module Builder), builder)) ->
+    begin match store, docker_backend with
+      | None, None ->
+        Fmt.epr "Must select either a store or the Docker backend@.";
+        exit 1
+      | Some _, Some _ ->
+        Fmt.epr "Cannot select a store and the Docker backend@.";
+        exit 1
+      | Some store, None -> create_builder store runc_conf
+      | None, Some path -> create_docker_builder path docker_clean docker_conf
+    end >>= fun (Builder ((module Builder), builder)) ->
     let spec =
       try Obuilder.Spec.t_of_sexp (Sexplib.Sexp.load_sexp spec)
       with Failure msg ->
@@ -85,6 +103,9 @@ let setup_log =
   let docs = Manpage.s_common_options in
   Term.(const setup_log $ Fmt_cli.style_renderer ~docs () $ Logs_cli.level ~docs ())
 
+let docs_store = "ZFS/BTRFS STORE"
+let docs_docker = "DOCKER BACKEND"
+
 let spec_file =
   Arg.required @@
   Arg.opt Arg.(some file) None @@
@@ -104,13 +125,41 @@ let src_dir =
 let store_t =
   Arg.conv Obuilder.Store_spec.(of_string, pp)
 
-let store =
+let store_required =
   Arg.required @@
   Arg.opt Arg.(some store_t) None @@
   Arg.info
     ~doc:"$(b,btrfs:/path) or $(b,rsync:/path) or $(b,zfs:pool) for build cache."
     ~docv:"STORE"
+    ~docs:docs_store
     ["store"]
+
+let store =
+  Arg.value @@
+  Arg.opt Arg.(some store_t) None @@
+  Arg.info
+    ~doc:"zfs:pool or btrfs:/path for build cache"
+    ~docv:"STORE"
+    ~docs:docs_store
+    ["store"]
+
+let docker_backend =
+  Arg.value @@
+  Arg.opt Arg.(some string) None @@
+  Arg.info
+    ~doc:"Use the Docker store and sandbox backend. Use $(docv) for temporary files."
+    ~docv:"PATH"
+    ~docs:docs_docker
+    ["docker-backend"]
+
+let docker_clean =
+  Arg.value @@
+  Arg.flag @@
+  Arg.info
+    ~doc:"Cleans the Docker store (see $(b,--docker-backend)) and sandbox data \
+          (images,  containers, volumes) at startup."
+    ~docs:docs_docker
+    ["docker-clean"]
 
 let id =
   Arg.required @@
@@ -132,13 +181,15 @@ let build =
   let doc = "Build a spec file." in
   let info = Cmd.info ~doc "build" in
   Cmd.v info
-    Term.(const build $ setup_log $ store $ spec_file $ Sandbox.cmdliner $ src_dir $ secrets)
+    Term.(const build $ setup_log $ store $ docker_backend $ docker_clean $ spec_file
+          $ Obuilder.Runc_sandbox.cmdliner $ Obuilder.Docker_sandbox.cmdliner $ src_dir $ secrets)
 
 let delete =
   let doc = "Recursively delete a cached build result." in
   let info = Cmd.info ~doc "delete" in
   Cmd.v info
-    Term.(const delete $ setup_log $ store $ Sandbox.cmdliner $ id)
+    Term.(const delete $ setup_log $ store_required $ Runc_sandbox.cmdliner $ id)
+
 
 let buildkit =
   Arg.value @@

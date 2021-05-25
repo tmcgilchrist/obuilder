@@ -1,7 +1,7 @@
 open Lwt.Infix
 open Obuilder
 
-module B = Builder(Mock_store)(Mock_sandbox)(Docker)
+module B = Builder(Mock_store)(Mock_sandbox)(Docker_extract)
 
 let ( / ) = Filename.concat
 let ( >>!= ) = Lwt_result.bind
@@ -429,7 +429,7 @@ let test_tar_long_filename _switch () =
     Lwt_unix.openfile (dst_dir / "out.tar") [Lwt_unix.O_WRONLY; Lwt_unix.O_CREAT] 0
     >>= fun to_untar ->
     let src_manifest = Manifest.generate ~exclude:[] ~src_dir "." |> Result.get_ok in
-    let user = {Spec.uid=1000; gid=1000} in
+    let user = Spec.(`Unix { uid=1000; gid=1000 }) in
     Tar_transfer.send_file
       ~src_dir
       ~src_manifest
@@ -590,46 +590,87 @@ let manifest =
     (Alcotest.of_pp (fun f (`Msg m) -> Fmt.string f m))
 
 (* Test copy step. *)
-let test_copy _switch () =
-  Lwt_io.with_temp_dir ~prefix:"test-copy-" @@ fun src_dir ->
+let test_copy generate =
+  Lwt_io.with_temp_dir ~prefix:"test-copy-bash-" @@ fun src_dir ->
   Lwt_io.(with_file ~mode:output) (src_dir / "file") (fun ch -> Lwt_io.write ch "file-data") >>= fun () ->
+  let root = if Sys.unix then "/root" else "C:/Windows" in
   (* Files *)
   let f1hash = Sha256.string "file-data" in
-  Alcotest.(check manifest) "File" (Ok (`File ("file", f1hash)))
-  @@ Manifest.generate ~exclude:[] ~src_dir "file";
-  Alcotest.(check manifest) "File" (Ok (`File ("file", f1hash)))
-  @@ Manifest.generate ~exclude:[] ~src_dir "./file";
-  Alcotest.(check manifest) "File" (Ok (`File ("file", f1hash)))
-  @@ Manifest.generate ~exclude:[] ~src_dir "/file";
-  Alcotest.(check manifest) "Missing" (Error (`Msg {|Source path "file2" not found|}))
-  @@ Manifest.generate ~exclude:[] ~src_dir "file2";
-  Alcotest.(check manifest) "Not dir" (Error (`Msg {|Not a directory: file (in "file/file2")|}))
-  @@ Manifest.generate ~exclude:[] ~src_dir "file/file2";
-  Alcotest.(check manifest) "Parent" (Error (`Msg {|Can't use .. in source paths! (in "../file")|}))
-  @@ Manifest.generate ~exclude:[] ~src_dir "../file";
+  generate ~exclude:[] ~src_dir "file" >>= fun r ->
+  Alcotest.(check manifest) "File" (Ok (`File ("file", f1hash))) r;
+  generate ~exclude:[] ~src_dir "./file" >>= fun r ->
+  Alcotest.(check manifest) "File relative" (Ok (`File ("file", f1hash))) r;
+  generate ~exclude:[] ~src_dir "/file" >>= fun r ->
+  Alcotest.(check manifest) "File absolute" (Ok (`File ("file", f1hash))) r;
+  generate ~exclude:[] ~src_dir "file2" >>= fun r ->
+  Alcotest.(check manifest) "Missing" (Error (`Msg {|Source path "file2" not found|})) r;
+  generate ~exclude:[] ~src_dir "file/file2" >>= fun r ->
+  Alcotest.(check manifest) "Not dir" (Error (`Msg {|Not a directory: file (in "file/file2")|})) r;
+  generate ~exclude:[] ~src_dir "../file" >>= fun r ->
+  Alcotest.(check manifest) "Parent" (Error (`Msg {|Can't use .. in source paths! (in "../file")|})) r;
   (* Symlinks *)
-  Unix.symlink "/root" (src_dir / "link");
-  Alcotest.(check manifest) "Link" (Ok (`Symlink (("link", "/root"))))
-  @@ Manifest.generate ~exclude:[] ~src_dir "link";
-  Alcotest.(check manifest) "Follow link" (Error (`Msg {|Not a regular file: link (in "link/file")|}))
-  @@ Manifest.generate ~exclude:[] ~src_dir "link/file";
+  Unix.symlink ~to_dir:true root (src_dir / "link");
+  generate ~exclude:[] ~src_dir "link" >>= fun r ->
+  Alcotest.(check manifest) "Link" (Ok (`Symlink (("link", root)))) r;
+  generate ~exclude:[] ~src_dir "link/file" >>= fun r ->
+  Alcotest.(check manifest) "Follow link" (Error (`Msg {|Not a regular file: link (in "link/file")|})) r;
   (* Directories *)
+  generate ~exclude:["file"] ~src_dir "" >>= fun r ->
   Alcotest.(check manifest) "Tree"
-    (Ok (`Dir ("", [`Symlink ("link", "/root")])))
-  @@ Manifest.generate ~exclude:["file"] ~src_dir "";
+    (Ok (`Dir ("", [`Symlink ("link", root)]))) r;
+  generate ~exclude:[] ~src_dir "." >>= fun r ->
   Alcotest.(check manifest) "Tree"
     (Ok (`Dir ("", [`File ("file", f1hash);
-                    `Symlink ("link", "/root")])))
-  @@ Manifest.generate ~exclude:[] ~src_dir ".";
+                    `Symlink ("link", root)]))) r;
   Unix.mkdir (src_dir / "dir1") 0o700;
   Unix.mkdir (src_dir / "dir1" / "dir2") 0o700;
   Lwt_io.(with_file ~mode:output) (src_dir / "dir1" / "dir2" / "file2") (fun ch -> Lwt_io.write ch "file2") >>= fun () ->
   let f2hash = Sha256.string "file2" in
-  Alcotest.(check manifest) "Nested file" (Ok (`File ("dir1/dir2/file2", f2hash)))
-  @@ Manifest.generate ~exclude:[] ~src_dir "dir1/dir2/file2";
+  generate ~exclude:[] ~src_dir "dir1/dir2/file2" >>= fun r ->
+  Alcotest.(check manifest) "Nested file" (Ok (`File ("dir1/dir2/file2", f2hash))) r;
+  generate ~exclude:[] ~src_dir "dir1" >>= fun r ->
   Alcotest.(check manifest) "Tree"
-    (Ok (`Dir ("dir1", [`Dir ("dir1/dir2", [`File ("dir1/dir2/file2", f2hash)])])))
-  @@ Manifest.generate ~exclude:[] ~src_dir "dir1";
+    (Ok (`Dir ("dir1", [`Dir ("dir1/dir2", [`File ("dir1/dir2/file2", f2hash)])]))) r;
+  Os.lwt_process_exec := Mock_exec.exec;
+  Lwt.return_unit
+
+(* Test the Manifest module. *)
+let test_copy_ocaml _switch () =
+  test_copy (fun ~exclude ~src_dir src -> Lwt_result.lift (Manifest.generate ~exclude ~src_dir src))
+
+(* Test the manifest.bash script. *)
+let test_copy_bash _switch () =
+  Os.lwt_process_exec := Os.default_exec;
+  let generate ~exclude ~src_dir src =
+    begin if Sys.win32 then
+        Os.pread ["cygpath"; "-m"; "/usr/bin/bash"] >>= fun bash ->
+        Os.pread ["cygpath"; "-m"; src_dir] >>= fun src_dir ->
+        Lwt.return (String.trim bash, String.trim src_dir)
+      else
+        Lwt.return ("/bin/bash", src_dir)
+    end >>= fun (bash, src_dir) ->
+    let manifest_bash =
+      Printf.sprintf "exec %s %S %S %d %s %d %s"
+        "./manifest.bash"
+        src_dir
+        "/"
+        (List.length exclude)
+        (String.concat " " (List.map Filename.quote exclude))
+        1
+        (Filename.quote src)
+    in
+    let argv = [ "--login"; "-c"; manifest_bash ] in
+    let pp f = Os.pp_cmd f argv in
+    Os.pread_all ~pp ~cmd:bash argv >>= fun (n, stdout, stderr) ->
+    if n = 0 then
+      Lwt_result.return @@ Manifest.t_of_sexp (Sexplib.Sexp.of_string stdout)
+    else if n = 1 then
+      Lwt_result.fail (`Msg stderr)
+    else
+      Lwt.return @@ Fmt.error_msg "%t failed with exit status %d" pp n
+  in
+  test_copy generate >>= fun () ->
+  Os.lwt_process_exec := Mock_exec.exec;
   Lwt.return_unit
 
 let test_cache_id () =
@@ -675,7 +716,7 @@ let test_secrets_simple _switch () =
     log;
   Lwt.return_unit
 
-let () =
+let main_unix () =
   let open Alcotest_lwt in
   Lwt_main.run begin
     run "OBuilder" [
@@ -705,7 +746,20 @@ let () =
         test_case "Long filename"  `Quick test_tar_long_filename;
       ];
       "manifest", [
-        test_case "Copy"       `Quick test_copy;
+        test_case "Copy using Manifest"      `Quick test_copy_ocaml;
+        test_case "Copy using manifest.bash" `Quick test_copy_bash;
       ];
     ]
   end
+
+let main_win32 () =
+  let open Alcotest_lwt in
+  Lwt_main.run begin
+    run "OBuilder" [
+      "manifest", [
+        test_case "Copy using manifest.bash" `Quick test_copy_bash;
+      ];
+    ]
+  end
+
+let () = if Sys.win32 then main_win32 () else main_unix ()

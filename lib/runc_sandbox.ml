@@ -106,7 +106,7 @@ module Json_config = struct
   let make {Config.cwd; argv; hostname; user; env; mounts; network; mount_secrets; entrypoint} t ~config_dir ~results_dir : Yojson.Safe.t =
     assert (entrypoint = None);
     let user =
-      let { Obuilder_spec.uid; gid } = user in
+      let { Obuilder_spec.uid; gid } = match user with `Unix user -> user | _ -> assert false in
       `Assoc [
         "uid", `Int uid;
         "gid", `Int gid;
@@ -332,10 +332,12 @@ let create ~state_dir (c : config) =
 
 open Cmdliner
 
+let docs = "RUNC SANDBOX"
+
 let fast_sync =
   Arg.value @@
   Arg.flag @@
-  Arg.info
+  Arg.info ~docs
     ~doc:"Ignore sync syscalls (requires runc >= 1.0.0-rc92)."
     ["fast-sync"]
 

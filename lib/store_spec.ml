@@ -13,7 +13,7 @@ let of_string s =
   | Some ("zfs", pool) -> Ok (`Zfs pool)
   | Some ("btrfs", path) -> Ok (`Btrfs path)
   | Some ("rsync", path) -> Ok (`Rsync path)
-  | _ -> Error (`Msg "Store must start with zfs: or btrfs:")
+  | _ -> Error (`Msg "Store must start with zfs: or btrfs: or rsync:")
 
 let pp f = function
   | `Zfs pool -> Fmt.pf f "zfs:%s" pool

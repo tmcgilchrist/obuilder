@@ -1,7 +1,9 @@
+(copy_files ../static/manifest.bash)
+
 (test
   (name test)
   (package obuilder)
-  (deps base.tar)
+  (deps base.tar manifest.bash)
   (libraries alcotest-lwt obuilder str logs.fmt))
 
 (dirs :standard \ test1)
