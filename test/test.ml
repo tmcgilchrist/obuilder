@@ -485,10 +485,10 @@ let test_sexp () =
       (user (uid 1) (gid 2))
      )|}
 
-let test_docker () =
+let test_docker_unix () =
   let test ~buildkit name expect sexp =
     let spec = Spec.t_of_sexp (Sexplib.Sexp.of_string sexp) in
-    let got = Obuilder_spec.Docker.dockerfile_of_spec ~buildkit spec in
+    let got = Obuilder_spec.Docker.dockerfile_of_spec ~buildkit ~escape:'\\' spec in
     let expect = remove_indent expect in
     Alcotest.(check string) name expect got
   in
@@ -567,6 +567,105 @@ let test_docker () =
      ) |};
   test ~buildkit:true "Secrets"
     {| FROM base as tools
+       RUN make tools
+
+       FROM base
+       RUN --mount=type=secret,id=a,target=/secrets/a,uid=0 --mount=type=secret,id=b,target=/secrets/b,uid=0 command1
+    |} {|
+     ((build tools
+            ((from base)
+             (run (shell "make tools"))))
+      (from base)
+      (run
+       (secrets (a (target /secrets/a))
+                (b (target /secrets/b)))
+       (shell "command1"))
+     ) |}
+
+let test_docker_windows () =
+  let test ~buildkit name expect sexp =
+    let spec = Spec.t_of_sexp (Sexplib.Sexp.of_string sexp) in
+    let got = Obuilder_spec.Docker.dockerfile_of_spec ~buildkit ~escape:'`' spec in
+    let expect = remove_indent expect in
+    Alcotest.(check string) name expect got
+  in
+  test ~buildkit:false "Dockerfile"
+    {| #escape=`
+       FROM base
+       # A test comment
+       WORKDIR C:/src
+       RUN command1
+       SHELL [ "C:/Windows/System32/cmd.exe", "/c" ]
+       RUN command2 && `
+           command3
+       COPY a b c
+       COPY a b c
+       ENV DEBUG="1"
+       USER Zaphod
+       COPY a b c
+    |} {|
+     ((from base)
+      (comment "A test comment")
+      (workdir C:/src)
+      (run (shell "command1"))
+      (shell C:/Windows/System32/cmd.exe /c)
+      (run
+       (cache (a (target /data))
+              (b (target /srv)))
+       (shell "command2 &&
+               command3"))
+      (copy (src a b) (dst c))
+      (copy (src a b) (dst c) (exclude .git _build))
+      (env DEBUG 1)
+      (user (name Zaphod))
+      (copy (src a b) (dst c))
+     ) |};
+  test ~buildkit:true "BuildKit"
+    {| #escape=`
+       FROM base
+       # A test comment
+       WORKDIR /src
+       RUN command1
+       SHELL [ "C:/Windows/System32/cmd.exe", "/c" ]
+       RUN --mount=type=cache,id=a,target=/data,uid=0 --mount=type=cache,id=b,target=/srv,uid=0 command2
+       COPY a b c
+       COPY a b c
+       ENV DEBUG="1"
+       USER Zaphod
+       COPY a b c
+    |} {|
+     ((from base)
+      (comment "A test comment")
+      (workdir /src)
+      (run (shell "command1"))
+      (shell C:/Windows/System32/cmd.exe /c)
+      (run
+       (cache (a (target /data))
+              (b (target /srv)))
+       (shell "command2"))
+      (copy (src a b) (dst c))
+      (copy (src a b) (dst c) (exclude .git _build))
+      (env DEBUG 1)
+      (user (name Zaphod))
+      (copy (src a b) (dst c))
+     ) |};
+  test ~buildkit:false "Multi-stage"
+    {| #escape=`
+       FROM base as tools
+       RUN make tools
+
+       FROM base
+       COPY --from=tools binary /usr/local/bin/
+    |} {|
+     ((build tools
+             ((from base)
+              (run (shell "make tools"))))
+      (from base)
+      (copy (from (build tools)) (src binary) (dst /usr/local/bin/))
+     ) |};
+  test ~buildkit:true "Secrets"
+    {| #escape=`
+       FROM base as tools
        RUN make tools
 
        FROM base
@@ -723,7 +822,8 @@ let main_unix () =
       "spec", [
         test_case_sync "Sexp"     `Quick test_sexp;
         test_case_sync "Cache ID" `Quick test_cache_id;
-        test_case_sync "Docker"   `Quick test_docker;
+        test_case_sync "Docker UNIX"    `Quick test_docker_unix;
+        test_case_sync "Docker Windows" `Quick test_docker_windows;
       ];
       "build", [
         test_case "Simple"     `Quick test_simple;

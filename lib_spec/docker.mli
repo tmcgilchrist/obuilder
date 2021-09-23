@@ -1,5 +1,6 @@
-val dockerfile_of_spec : buildkit:bool -> Spec.t -> string
-(** [dockerfile_of_spec x] produces a Dockerfile that aims to be equivalent to [x].
+val dockerfile_of_spec : buildkit:bool -> escape:char -> Spec.t -> string
+(** [dockerfile_of_spec ~buildkit ~escape x] produces a Dockerfile
+   that aims to be equivalent to [x].
 
     However, note that:
 

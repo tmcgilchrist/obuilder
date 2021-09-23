@@ -6,7 +6,6 @@ module Runc_sandbox = Obuilder.Runc_sandbox
 module Docker_sandbox = Obuilder.Docker_sandbox
 
 type builder = Builder : (module Obuilder.BUILDER with type t = 'a) * 'a -> builder
-
 let log tag msg =
   match tag with
   | `Heading -> Fmt.pr "%a@." Fmt.(styled (`Fg (`Hi `Blue)) string) msg
@@ -84,10 +83,11 @@ let delete () store conf id =
     Builder.delete builder id ~log:(fun id -> Fmt.pr "Removing %s@." id)
   end
 
-let dockerfile () buildkit spec =
+let dockerfile () buildkit escape spec =
+  let escape = match escape with `Unix -> '\\' | `Windows -> '`' in
   Sexplib.Sexp.load_sexp spec
   |> Obuilder_spec.t_of_sexp
-  |> Obuilder_spec.Docker.dockerfile_of_spec ~buildkit
+  |> Obuilder_spec.Docker.dockerfile_of_spec ~buildkit ~escape
   |> print_endline
 
 open Cmdliner
@@ -182,7 +182,7 @@ let build =
   let info = Cmd.info ~doc "build" in
   Cmd.v info
     Term.(const build $ setup_log $ store $ docker_backend $ docker_clean $ spec_file
-          $ Obuilder.Runc_sandbox.cmdliner $ Obuilder.Docker_sandbox.cmdliner $ src_dir $ secrets)
+          $ Runc_sandbox.cmdliner $ Docker_sandbox.cmdliner $ src_dir $ secrets)
 
 let delete =
   let doc = "Recursively delete a cached build result." in
@@ -198,11 +198,20 @@ let buildkit =
     ~doc:"Output extended BuildKit syntax."
     ["buildkit"]
 
+let escape =
+  let styles = [("unix", `Unix); ("windows", `Windows)] in
+  let doc = Arg.doc_alts_enum styles |> Printf.sprintf "Dockerfile escape style, must be %s." in
+  Arg.value @@
+  Arg.opt Arg.(enum styles) (if Sys.unix then `Unix else `Windows) @@
+  Arg.info ~doc
+    ~docv:"STYLE"
+    ["escape"]
+
 let dockerfile =
   let doc = "Convert a spec to Dockerfile format." in
   let info = Cmd.info ~doc "dockerfile" in
   Cmd.v info
-    Term.(const dockerfile $ setup_log $ buildkit $ spec_file)
+    Term.(const dockerfile $ setup_log $ buildkit $ escape $ spec_file)
 
 let healthcheck =
   let doc = "Perform a self-test." in
