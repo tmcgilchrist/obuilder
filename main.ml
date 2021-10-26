@@ -34,18 +34,21 @@ let read_whole_file path =
   let len = in_channel_length ic in
   really_input_string ic len
 
+let select_backend store docker_backend docker_clean runc_conf docker_conf =
+  match store, docker_backend with
+  | None, None ->
+    Fmt.epr "Must select either a store or the Docker backend@.";
+    exit 1
+  | Some _, Some _ ->
+    Fmt.epr "Cannot select a store and the Docker backend@.";
+    exit 1
+  | Some store, None -> create_builder store runc_conf
+  | None, Some path -> create_docker_builder path docker_clean docker_conf
+
 let build () store docker_backend docker_clean spec runc_conf docker_conf src_dir secrets =
   Lwt_main.run begin
-    begin match store, docker_backend with
-      | None, None ->
-        Fmt.epr "Must select either a store or the Docker backend@.";
-        exit 1
-      | Some _, Some _ ->
-        Fmt.epr "Cannot select a store and the Docker backend@.";
-        exit 1
-      | Some store, None -> create_builder store runc_conf
-      | None, Some path -> create_docker_builder path docker_clean docker_conf
-    end >>= fun (Builder ((module Builder), builder)) ->
+    select_backend store docker_backend docker_clean runc_conf docker_conf
+    >>= fun (Builder ((module Builder), builder)) ->
     let spec =
       try Obuilder.Spec.t_of_sexp (Sexplib.Sexp.load_sexp spec)
       with Failure msg ->
@@ -66,9 +69,10 @@ let build () store docker_backend docker_clean spec runc_conf docker_conf src_di
       exit 1
   end
 
-let healthcheck () store conf =
+let healthcheck () store docker_backend docker_clean runc_conf docker_conf =
   Lwt_main.run begin
-    create_builder store conf >>= fun (Builder ((module Builder), builder)) ->
+    select_backend store docker_backend docker_clean runc_conf docker_conf
+    >>= fun (Builder ((module Builder), builder)) ->
     Builder.healthcheck builder >|= function
     | Error (`Msg m) ->
       Fmt.epr "Healthcheck failed: %s@." m;
@@ -77,9 +81,10 @@ let healthcheck () store conf =
       Fmt.pr "Healthcheck passed@."
   end
 
-let delete () store conf id =
+let delete () store docker_backend docker_clean runc_conf docker_conf id =
   Lwt_main.run begin
-    create_builder store conf >>= fun (Builder ((module Builder), builder)) ->
+    select_backend store docker_backend docker_clean runc_conf docker_conf
+    >>= fun (Builder ((module Builder), builder)) ->
     Builder.delete builder id ~log:(fun id -> Fmt.pr "Removing %s@." id)
   end
 
@@ -125,20 +130,11 @@ let src_dir =
 let store_t =
   Arg.conv Obuilder.Store_spec.(of_string, pp)
 
-let store_required =
-  Arg.required @@
-  Arg.opt Arg.(some store_t) None @@
-  Arg.info
-    ~doc:"$(b,btrfs:/path) or $(b,rsync:/path) or $(b,zfs:pool) for build cache."
-    ~docv:"STORE"
-    ~docs:docs_store
-    ["store"]
-
 let store =
   Arg.value @@
   Arg.opt Arg.(some store_t) None @@
   Arg.info
-    ~doc:"zfs:pool or btrfs:/path for build cache"
+    ~doc:"btrfs:/path or rsync:/path or zfs:pool for build cache"
     ~docv:"STORE"
     ~docs:docs_store
     ["store"]
@@ -188,8 +184,8 @@ let delete =
   let doc = "Recursively delete a cached build result." in
   let info = Cmd.info ~doc "delete" in
   Cmd.v info
-    Term.(const delete $ setup_log $ store_required $ Runc_sandbox.cmdliner $ id)
-
+    Term.(const delete $ setup_log $ store $ docker_backend $ docker_clean
+          $ Runc_sandbox.cmdliner $ Docker_sandbox.cmdliner $ id)
 
 let buildkit =
   Arg.value @@
@@ -217,7 +213,8 @@ let healthcheck =
   let doc = "Perform a self-test." in
   let info = Cmd.info ~doc "healthcheck" in
   Cmd.v info
-    Term.(const healthcheck $ setup_log $ store $ Sandbox.cmdliner)
+    Term.(const healthcheck $ setup_log $ store $ docker_backend $ docker_clean
+          $ Runc_sandbox.cmdliner $ Docker_sandbox.cmdliner)
 
 let cmds = [build; delete; dockerfile; healthcheck]
 
