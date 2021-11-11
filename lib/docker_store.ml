@@ -26,12 +26,14 @@ module Path = struct
      - result: completed builds, named by ID
      - result-tmp: in-progress builds
      - state: for sqlite DB, etc
+     - log_file: for logs
 
      result-tmp is wiped at start-up. *)
 
   let result t id        = t.root / "result" / id
   let result_tmp t id    = t.root / "result-tmp" / id
   let state t            = t.root / "state"
+  let log_file t id      = t.root / "logs" / (id ^ ".log")
 end
 
 (* The OBuilder persistent cache is implemented using a shared Docker
@@ -101,6 +103,7 @@ let create ?(clean=false) root =
   Os.ensure_dir (root / "result");
   Os.ensure_dir (root / "result-tmp");
   Os.ensure_dir (root / "state");
+  Os.ensure_dir (root / "logs");
   let* () = purge (root / "result-tmp") in
   (* Left-over caches (Docker volumes) are cleaned in {!Docker_sandbox.clean_docker}. *)
   Lwt.return t
@@ -154,9 +157,14 @@ let delete t id =
   in
   let image = Docker.docker_image id in
   let* exists = Docker.exists image in
-  match exists with
-  | Ok () -> Docker.image (`Remove image)
-  | Error _ -> Lwt.return_unit
+  let* () = match exists with
+    | Ok () -> Docker.image (`Remove image)
+    | Error _ -> Lwt.return_unit
+  in
+  let log_file = Path.log_file t id in
+  if Sys.file_exists log_file then
+    Lwt_unix.unlink log_file
+  else Lwt.return_unit
 
 let result t id =
   let dir = Path.result t id in
@@ -173,6 +181,8 @@ let result t id =
     let* () = Docker.rmi [img] in
     Lwt.return_none
   | _ -> Lwt.return_none
+
+let log_file t id = Lwt.return (Path.log_file t id)
 
 let state_dir = Path.state
 
