@@ -26,7 +26,9 @@ let pp_signal f x =
   else if x = sigterm then Fmt.string f "term"
   else Fmt.int f x
 
-let pp_cmd = Fmt.hbox Fmt.(list ~sep:sp (quote string))
+let pp_cmd f (cmd, argv) =
+  let argv = if cmd = "" then argv else cmd :: argv in
+  Fmt.hbox Fmt.(list ~sep:sp (quote string)) f argv
 
 let redirection = function
   | `FD_move_safely x -> `FD_copy x.raw
@@ -62,15 +64,15 @@ let default_exec ?cwd ?stdin ?stdout ?stderr ~pp argv =
 let lwt_process_exec = ref default_exec
 
 let exec_result ?cwd ?stdin ?stdout ?stderr ~pp ?(is_success=((=) 0)) ?(cmd="") argv =
-  Logs.info (fun f -> f "Exec %a" pp_cmd argv);
+  Logs.info (fun f -> f "Exec %a" pp_cmd (cmd, argv));
   !lwt_process_exec ?cwd ?stdin ?stdout ?stderr ~pp (cmd, Array.of_list argv) >>= function
   | Ok n when is_success n -> Lwt_result.ok Lwt.return_unit
   | Ok n -> Lwt.return @@ Fmt.error_msg "%t failed with exit status %d" pp n
   | Error e -> Lwt_result.fail (e : [`Msg of string] :> [> `Msg of string])
 
 let exec ?cwd ?stdin ?stdout ?stderr ?(is_success=((=) 0)) ?(cmd="") argv =
-  Logs.info (fun f -> f "Exec %a" pp_cmd argv);
-  let pp f = pp_cmd f argv in
+  Logs.info (fun f -> f "Exec %a" pp_cmd (cmd, argv));
+  let pp f = pp_cmd f (cmd, argv) in
   !lwt_process_exec ?cwd ?stdin ?stdout ?stderr ~pp (cmd, Array.of_list argv) >>= function
   | Ok n when is_success n -> Lwt.return_unit
   | Ok n -> Lwt.fail_with (Fmt.str "%t failed with exit status %d" pp n)
@@ -161,7 +163,7 @@ let pread_all ?stdin ~pp ?(cmd="") argv =
   with_pipe_from_child @@ fun ~r:r1 ~w:w1 ->
   with_pipe_from_child @@ fun ~r:r2 ~w:w2 ->
   let child =
-    Logs.info (fun f -> f "Exec %a" pp_cmd argv);
+    Logs.info (fun f -> f "Exec %a" pp_cmd (cmd, argv));
     !lwt_process_exec ?stdin ~stdout:(`FD_move_safely w1) ~stderr:(`FD_move_safely w2) ~pp
       (cmd, Array.of_list argv)
   in

@@ -759,7 +759,7 @@ let test_copy_bash _switch () =
         (Filename.quote src)
     in
     let argv = [ "--login"; "-c"; manifest_bash ] in
-    let pp f = Os.pp_cmd f argv in
+    let pp f = Os.pp_cmd f (bash, argv) in
     Os.pread_all ~pp ~cmd:bash argv >>= fun (n, stdout, stderr) ->
     if n = 0 then
       Lwt_result.return @@ Manifest.t_of_sexp (Sexplib.Sexp.of_string stdout)

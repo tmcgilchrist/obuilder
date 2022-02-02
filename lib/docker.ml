@@ -47,7 +47,7 @@ let pread' ?stderr argv =
 
 let pread_result' ?stderr argv =
   let cmd = "docker" :: argv in
-  let pp f = Os.pp_cmd f cmd in
+  let pp f = Os.pp_cmd f ("", cmd) in
   Os.pread_result ~pp ?stderr cmd
 
 let exec' ?stdin ?stdout ?stderr ?is_success argv =
@@ -55,7 +55,7 @@ let exec' ?stdin ?stdout ?stderr ?is_success argv =
 
 let exec_result' ?stdin ?stdout ?stderr ?is_success argv =
   let cmd = "docker" :: argv in
-  let pp f = Os.pp_cmd f cmd in
+  let pp f = Os.pp_cmd f ("", cmd) in
   Os.exec_result ?stdin ?stdout ?stderr ?is_success ~pp cmd
 
 let create ?stderr (`Docker_image base) =
