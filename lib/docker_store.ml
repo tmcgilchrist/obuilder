@@ -237,9 +237,13 @@ let delete_cache t name =
   let snapshot = Cache.cache name in
   let* exists = Cache.exists snapshot in
   if exists then
-    let* () = Cache.delete snapshot in
-    Lwt_result.return ()
-  else Lwt_result.return ()
+    let* containers = Docker.volume_containers snapshot in
+    if containers <> [] then
+      let* () = Cache.delete snapshot in
+      Lwt_result.ok Lwt.return_unit
+    else
+      Lwt_result.fail `Busy
+  else Lwt_result.ok Lwt.return_unit
 
 let complete_deletes t =
   ignore t;

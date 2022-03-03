@@ -135,6 +135,11 @@ let volume = function
     let volumes = List.rev_map extract_name volumes in
     pread' ("volume" :: "rm" :: "--" :: volumes)
 
+let volume_containers (`Docker_volume name) =
+  let+ names = pread' (["ps"; "-a"; "--filter"; "volume=" ^ name; "--format={{ .Names }}"]) in
+  names |> String.trim |> String.split_on_char '\n'
+  |> List.map (fun vol -> `Docker_volume vol)
+
 let mount_point name =
   let* s = volume (`Inspect ([name], `Mountpoint)) in
   Lwt.return (String.trim s)

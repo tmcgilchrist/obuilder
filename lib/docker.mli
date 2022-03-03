@@ -67,6 +67,8 @@ val volume :
   | `List of string option
   | `Remove of [< `Docker_volume of string ] list ] ->
   string Lwt.t
+val volume_containers :
+  [< `Docker_volume of string ] -> [> `Docker_volume of string ] list Lwt.t
 val mount_point : [< `Docker_volume of string ] -> string Lwt.t
 val build : string list -> [< `Docker_image of string ] -> string -> unit Lwt.t
 val run : ?stdin:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
