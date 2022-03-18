@@ -117,6 +117,4 @@ val obuilder_volumes : ?prefix:string -> unit -> [ `Docker_volume of string ] li
 val obuilder_caches_tmp : unit -> [ `Docker_volume of string ] list Lwt.t
 
 (** Fetch (pull and extract) base images using Docker *)
-module Extract : sig
-  include S.FETCHER
-end
+module Extract : S.FETCHER
