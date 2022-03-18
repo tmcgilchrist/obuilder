@@ -130,6 +130,8 @@ module type DOCKER_CMD = sig
   type 'a logerr
   (** Log only standard error of the sub-process. *)
 
+  val version : (unit -> (string, [> `Msg of string ]) result Lwt.t) logerr
+
   val pull :
     ([< `Docker_image of string ] -> unit Lwt.t) log
   val export :

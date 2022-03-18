@@ -278,12 +278,11 @@ module Make (Raw_store : S.STORE) (Sandbox : S.SANDBOX) (Fetch : S.FETCHER) = st
 
   let healthcheck ?(timeout=30.0) t =
     Os.with_pipe_from_child (fun ~r ~w ->
-        let pp f = Fmt.string f "docker version" in
-        let result = Os.exec_result ~pp ~stdout:`Dev_null ~stderr:(`FD_move_safely w) ["docker"; "version"] in
+        let result = Docker.Cmd.version ~stderr:(`FD_move_safely w) () in
         let r = Lwt_io.(of_fd ~mode:input) r ~close:Lwt.return in
         Lwt_io.read r >>= fun err ->
         result >>= function
-        | Ok () -> Lwt_result.return ()
+        | Ok _desc -> Lwt_result.return ()
         | Error (`Msg m) -> Lwt_result.fail (`Msg (Fmt.str "%s@.%s" m (String.trim err)))
       ) >>!= fun () ->
     let buffer = Buffer.create 1024 in
@@ -525,12 +524,11 @@ module Docker = struct
 
   let healthcheck ?(timeout=if Sys.win32 then 120.0 else 30.0) t =
     Os.with_pipe_from_child (fun ~r ~w ->
-        let pp f = Fmt.string f "docker version" in
-        let result = Os.exec_result ~pp ~stdout:`Dev_null ~stderr:(`FD_move_safely w) ["docker"; "version"] in
+        let result = Docker.Cmd.version ~stderr:(`FD_move_safely w) () in
         let r = Lwt_io.(of_fd ~mode:input) r ~close:Lwt.return in
         Lwt_io.read r >>= fun err ->
         result >>= function
-        | Ok () -> Lwt_result.return ()
+        | Ok _desc -> Lwt_result.return ()
         | Error (`Msg m) -> Lwt_result.fail (`Msg (Fmt.str "%s@.%s" m (String.trim err)))
       ) >>!= fun () ->
     let buffer = Buffer.create 1024 in

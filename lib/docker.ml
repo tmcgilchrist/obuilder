@@ -74,6 +74,9 @@ module Cmd = struct
   type 'a logerr = ?stderr:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
                    'a
 
+  let version ?stderr () =
+    pread_result ?stderr (["version"])
+
   let create ?stderr (`Docker_image base) =
     pread ?stderr ("create" :: ["--"; base])
 
@@ -218,6 +221,9 @@ module Cmd_log = struct
     let* r = fn ~stdout ~stderr in
     let+ () = copy_log in
     r
+
+  let version ~log () =
+    with_stderr_log ~log (fun ~stderr -> Cmd.version ~stderr ())
 
   let pull ~log base =
     with_log ~log (fun ~stdout ~stderr -> Cmd.pull ~stdout ~stderr base)
