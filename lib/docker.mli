@@ -42,79 +42,23 @@ val setup_command : entp:string list -> cmd:string list -> string * string list
     of [head] and [cmd] to be given to Docker command, as Docker
     [--entrypoint] takes only one argument. *)
 
-val pull : ?stderr:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  [< `Docker_image of string ] -> unit Lwt.t
-val export : ?stdout:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  [< `Docker_container of string ] -> unit Lwt.t
-val image : ?stdout:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  [< `Remove of [< `Docker_image of string ] ] -> unit Lwt.t
-val rm : ?stdout:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  [ `Docker_container of string ] list -> unit Lwt.t
-val rmi : ?stdout:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  [ `Docker_image of string ] list -> unit Lwt.t
-val tag : ?stdout:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  ?stderr:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  [< `Docker_image of string ] -> [< `Docker_image of string ] ->
-  unit Lwt.t
-val commit : ?stdout:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  [< `Docker_image of string ] ->
-  [< `Docker_container of string ] ->
-  [< `Docker_image of string ] ->
-  unit Lwt.t
-val volume :
-  [< `Create of [< `Docker_volume of string ]
-  | `Inspect of [< `Docker_volume of string ] list * [< `Mountpoint ]
-  | `List of string option
-  | `Remove of [< `Docker_volume of string ] list ] ->
-  string Lwt.t
-val volume_containers :
-  [< `Docker_volume of string ] -> [> `Docker_volume of string ] list Lwt.t
-val mount_point : [< `Docker_volume of string ] -> string Lwt.t
-val build : string list -> [< `Docker_image of string ] -> string -> unit Lwt.t
-val run : ?stdin:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  ?stdout:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  ?stderr:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  ?is_success:(int -> bool) ->
-  ?name:[< `Docker_container of string ] ->
-  ?rm:bool ->
-  string list ->
-  [< `Docker_image of string ] ->
-  string list ->
-  unit Lwt.t
-val run_result : ?stdin:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  ?stdout:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  ?stderr:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  ?name:[< `Docker_container of string ] ->
-  ?rm:bool ->
-  string list ->
-  [< `Docker_image of string ] ->
-  string list ->
-  (unit, [> `Msg of string ]) result Lwt.t
-val run_pread_result : ?stderr:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  ?name:[< `Docker_container of string ] ->
-  ?rm:bool ->
-  string list ->
-  [< `Docker_image of string ] ->
-  string list ->
-  (string, [> `Msg of string ]) result Lwt.t
-val stop : [< `Docker_container of string ] ->
-  (unit, [> `Msg of string ]) result Lwt.t
+(** Wrappers for various Docker client commands, exposing file descritors. *)
+module Cmd : S.DOCKER_CMD
+       with
+         type 'a log = ?stdout:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
+                       ?stderr:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
+                       'a
+       and
+         type 'a logerr = ?stderr:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
+                          'a
 
-val manifest :?stdout:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  ?stderr:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
-  [< `Create of [< `Docker_image of string ] * [< `Docker_image of string ] list
-  | `Inspect of [< `Docker_image of string ]
-  | `Remove of [< `Docker_image of string ] list ] ->
-  (unit, [> `Msg of string ]) result Lwt.t
-
-val exists : [< `Docker_container of string | `Docker_image of string
-             | `Docker_volume of string ] ->
-  (unit, [> `Msg of string ]) result Lwt.t
-
-val obuilder_images : unit -> [ `Docker_image of string ] list Lwt.t
-val obuilder_containers : unit -> [ `Docker_container of string ] list Lwt.t
-val obuilder_volumes : ?prefix:string -> unit -> [ `Docker_volume of string ] list Lwt.t
-val obuilder_caches_tmp : unit -> [ `Docker_volume of string ] list Lwt.t
+(** Wrappers for various Docker client commands, logging directly to the
+    {!Build_log}. *)
+module Cmd_log : S.DOCKER_CMD
+       with
+         type 'a log = log:Build_log.t -> 'a
+       and
+         type 'a logerr = log:Build_log.t -> 'a
 
 (** Fetch (pull and extract) base images using Docker *)
 module Extract : S.FETCHER

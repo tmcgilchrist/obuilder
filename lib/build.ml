@@ -360,7 +360,7 @@ module Docker = struct
              Lwt_unix.close close_me >>= fun () ->
              Lwt_result.bind_lwt
                (Docker_sandbox.run ~cancelled ~stdin ~log t.sandbox config id)
-               (fun () -> Docker_sandbox.teardown ~commit:true id)
+               (fun () -> Docker_sandbox.teardown ~log ~commit:true id)
           )
           (fun () ->
              !to_release |> Lwt_list.iter_s (fun f -> f ())
@@ -486,8 +486,8 @@ module Docker = struct
     let id = Sha256.to_hex (Sha256.string base) in
     Store.build t.store ~id ~log (fun ~cancelled:_ ~log:_ _ ->
         Log.info (fun f -> f "Base image not present; importing %S..." base);
-        Docker.pull (`Docker_image base) >>= fun () ->
-        Docker.tag (`Docker_image base) (Docker.docker_image id) >>= fun () ->
+        Docker.Cmd.pull (`Docker_image base) >>= fun () ->
+        Docker.Cmd.tag (`Docker_image base) (Docker.docker_image id) >>= fun () ->
         Lwt_result.return ()
       )
     >>!= fun id ->

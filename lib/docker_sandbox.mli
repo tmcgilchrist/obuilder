@@ -2,7 +2,7 @@
 
 include S.SANDBOX
 
-val teardown : commit:bool -> S.id -> unit Lwt.t
+val teardown : log:Build_log.t -> commit:bool -> S.id -> unit Lwt.t
 
 val manifest_from_build :
   t ->

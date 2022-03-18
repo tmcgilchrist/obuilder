@@ -5,6 +5,16 @@ let ( >>!= ) = Lwt_result.bind
 type unix_fd = {
   raw : Unix.file_descr;
   mutable needs_close : bool;
+  }
+
+let stdout = {
+  raw = Unix.stdout;
+  needs_close = false;
+  }
+
+let stderr = {
+  raw = Unix.stderr;
+  needs_close = false;
 }
 
 let close fd =

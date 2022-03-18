@@ -63,22 +63,22 @@ end = struct
   let name (`Docker_volume name) = name
 
   let exists volume =
-    let* r = Docker.exists volume in
+    let* r = Docker.Cmd.exists volume in
     let b = Result.is_ok r in
     Lwt.return b
 
   let create volume =
-    let* _ = Docker.volume (`Create volume) in
+    let* _ = Docker.Cmd.volume (`Create volume) in
     Lwt.return_unit
 
   let snapshot ~src dst =
     let* () = create dst in
-    let* src = Docker.mount_point src in
-    let* dst = Docker.mount_point dst in
+    let* src = Docker.Cmd.mount_point src in
+    let* dst = Docker.Cmd.mount_point dst in
     Os.copy ~superuser:true ~src dst
 
   let delete volume =
-    let* _ = Docker.volume (`Remove [volume]) in
+    let* _ = Docker.Cmd.volume (`Remove [volume]) in
     Lwt.return_unit
 end
 
@@ -130,7 +130,7 @@ let build t ?base ~id (fn:(string -> (unit, 'e) Lwt_result.t)) : (unit, 'e) Lwt_
   | Some base ->
     let base = Docker.docker_image base in
     let tmp_image = (Docker.docker_image ~tmp:true id) in
-    let* () = Docker.tag base tmp_image in
+    let* () = Docker.Cmd.tag base tmp_image in
     Lwt.try_bind
       (fun () -> fn result_tmp)
       (fun r ->
@@ -141,12 +141,12 @@ let build t ?base ~id (fn:(string -> (unit, 'e) Lwt_result.t)) : (unit, 'e) Lwt_
          (* As the cache is cleaned before this, the sandbox must take
             care of committing the container and removing it, otherwise
             the container still has a reference to the volume. *)
-         let* () = Docker.image (`Remove tmp_image) in
+         let* () = Docker.Cmd.image (`Remove tmp_image) in
          Lwt.return r)
       (fun exn ->
          Log.warn (fun f -> f "Uncaught exception from %S build function: %a" id Fmt.exn exn);
          let* () = Os.delete_recursively result_tmp in
-         let* () = Docker.image (`Remove tmp_image) in
+         let* () = Docker.Cmd.image (`Remove tmp_image) in
          Lwt.fail exn)
 
 let delete t id =
@@ -156,9 +156,9 @@ let delete t id =
     | `Missing -> Lwt.return_unit
   in
   let image = Docker.docker_image id in
-  let* exists = Docker.exists image in
+  let* exists = Docker.Cmd.exists image in
   let* () = match exists with
-    | Ok () -> Docker.image (`Remove image)
+    | Ok () -> Docker.Cmd.image (`Remove image)
     | Error _ -> Lwt.return_unit
   in
   let log_file = Path.log_file t id in
@@ -169,7 +169,7 @@ let delete t id =
 let result t id =
   let dir = Path.result t id in
   let img = Docker.docker_image id in
-  let* r = Docker.exists img in
+  let* r = Docker.Cmd.exists img in
   (* We want both the Docker image and the directory. If only one of
      them is present (should not happen), clean it. *)
   match r, Os.check_dir dir with
@@ -178,7 +178,7 @@ let result t id =
     let* () = Os.delete_recursively dir in
     Lwt.return_none
   | Ok _, `Missing ->
-    let* () = Docker.rmi [img] in
+    let* () = Docker.Cmd.rmi [img] in
     Lwt.return_none
   | _ -> Lwt.return_none
 
@@ -211,7 +211,7 @@ let cache ~user t name : (string * (unit -> unit Lwt.t)) Lwt.t =
   let* () = Cache.snapshot ~src:snapshot tmp in
   let* () = match user with
     | `Unix { Obuilder_spec.uid; gid } ->
-      let* tmp = Docker.mount_point tmp in
+      let* tmp = Docker.Cmd.mount_point tmp in
       Os.sudo ["chown"; strf "%d:%d" uid gid; tmp]
     | `Windows _ -> Lwt.return_unit (* FIXME: does Windows need special treatment? *)
   in
@@ -237,7 +237,7 @@ let delete_cache t name =
   let snapshot = Cache.cache name in
   let* exists = Cache.exists snapshot in
   if exists then
-    let* containers = Docker.volume_containers snapshot in
+    let* containers = Docker.Cmd.volume_containers snapshot in
     if containers <> [] then
       let* () = Cache.delete snapshot in
       Lwt_result.ok Lwt.return_unit

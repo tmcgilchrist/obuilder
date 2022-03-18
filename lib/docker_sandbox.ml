@@ -62,7 +62,7 @@ module Docker_config = struct
     docker_argv, argv
 end
 
-let secrets_layer mount_secrets base_image container docker_argv =
+let secrets_layer ~log mount_secrets base_image container docker_argv =
   (* FIXME: the shell, mkdir mklink/ln should come from a trusted
      volume rather than the container itself. *)
   let link id link =
@@ -93,20 +93,20 @@ let secrets_layer mount_secrets base_image container docker_argv =
     in
 
     Lwt_result.bind_lwt
-      (Docker.run_result ~name:container docker_argv base_image argv)
+      (Docker.Cmd_log.run_result ~log ~name:container docker_argv base_image argv)
       (fun () ->
-         let* () = Docker.commit base_image container base_image in
-         Docker.rm [container])
+         let* () = Docker.Cmd_log.commit ~log base_image container base_image in
+         Docker.Cmd_log.rm ~log [container])
 
-let teardown ~commit id =
+let teardown ~log ~commit id =
   let container = Docker.docker_container id in
   let base_image = Docker.docker_image ~tmp:true id in
   let target_image = Docker.docker_image id in
   let* () =
-    if commit then Docker.commit base_image container target_image
+    if commit then Docker.Cmd_log.commit ~log base_image container target_image
     else Lwt.return_unit
   in
-  Docker.rm [container]
+  Docker.Cmd_log.rm ~log [container]
 
 let run ~cancelled ?stdin ~log t config (id:S.id) =
   Lwt_io.with_temp_dir ~perm:0o700 ~prefix:"obuilder-docker-" @@ fun tmp ->
@@ -121,21 +121,17 @@ let run ~cancelled ?stdin ~log t config (id:S.id) =
   in
   let container = Docker.docker_container id in
   let base_image = Docker.docker_image ~tmp:true id in
-  Os.with_pipe_from_child @@ fun ~r:out_r ~w:out_w ->
-  let stdout = `FD_move_safely out_w in
-  let stderr = stdout in
-  let copy_log = Build_log.copy ~src:out_r ~dst:log in
   let proc =
     Lwt_result.bind
-      (secrets_layer config.Config.mount_secrets base_image container docker_argv)
+      (secrets_layer ~log config.Config.mount_secrets base_image container docker_argv)
       (fun () ->
          let stdin = Option.map (fun x -> `FD_move_safely x) stdin in
-         Docker.run_result ?stdin ~stdout ~stderr ~name:container docker_argv base_image argv)
+         Docker.Cmd_log.run_result ~log ?stdin ~name:container docker_argv base_image argv)
   in
   Lwt.on_termination cancelled (fun () ->
       let rec aux () =
         if Lwt.is_sleeping proc then (
-          let* r = Docker.stop container in
+          let* r = Docker.Cmd_log.stop ~log container in
           match r with
           | Ok () -> Lwt.return_unit
           | Error (`Msg m) ->
@@ -148,10 +144,9 @@ let run ~cancelled ?stdin ~log t config (id:S.id) =
       Lwt.async aux
     );
   let* r = proc in
-  let* () = copy_log in
   let* () = match r with
     | Ok () -> Lwt.return_unit
-    | _ -> Docker.rm [container]
+    | _ -> Docker.Cmd_log.rm ~log [container]
   in
   if Lwt.is_sleeping cancelled then Lwt.return (r :> (unit, [`Msg of string | `Cancelled]) result)
   else Lwt_result.fail `Cancelled
@@ -188,7 +183,7 @@ let manifest_from_build t ~base ~exclude src workdir user =
       ()
   in
   let docker_args, args = Docker_config.make config t in
-  Docker.run_pread_result ~rm:true docker_args (Docker.docker_image base) args >>!= fun manifests ->
+  Docker.Cmd.run_pread_result ~rm:true docker_args (Docker.docker_image base) args >>!= fun manifests ->
   match Parsexp.Many.parse_string manifests with
   | Ok ts -> List.rev_map Manifest.t_of_sexp ts |> Lwt_result.return
   | Error e -> Lwt_result.fail (`Msg (Parsexp.Parse_error.message e))
@@ -202,7 +197,7 @@ let manifest_files_from op fd =
   | `Copy_items (src_manifest, _) -> Lwt_list.iter_s copy_root src_manifest
   | `Copy_item (src_manifest, _) -> copy_root src_manifest
 
-let tarball_from_build t ~files_from ~stderr_out ~tar workdir user id =
+let tarball_from_build t ~log ~files_from ~tar workdir user id =
   let obuilder_volume = Docker.obuilder_volume () in
   let entrypoint =
     if Sys.win32 then Docker.mount_point_inside_native // obuilder_volume // "tar.exe"
@@ -234,9 +229,8 @@ let tarball_from_build t ~files_from ~stderr_out ~tar workdir user id =
      reads the end-of-tar magic sequence, then we can close the output pipe of
      the Docker process and ignore the error. *)
   let is_success = if Sys.win32 then Some (function 0 | 1 -> true | _ -> false) else None in
-  Docker.run ~stdin:(`FD_move_safely files_from) ~stdout:(`FD_move_safely tar)
-    ~stderr:(`FD_move_safely stderr_out) ~rm:true ?is_success
-    docker_args (Docker.docker_image id) args
+  Docker.Cmd_log.run' ~log ~stdin:(`FD_move_safely files_from) ~stdout:(`FD_move_safely tar)
+    ~rm:true ?is_success docker_args (Docker.docker_image id) args
 
 let transform op ~user ~from_tar ~to_untar =
   match op with
@@ -282,7 +276,7 @@ let untar t ~cancelled ~stdin ~log ?dst_dir id =
   in
   Lwt_result.bind_lwt
     (run ~cancelled ~stdin ~log t config id)
-    (fun () -> teardown ~commit:true id)
+    (fun () -> teardown ~log ~commit:true id)
 
 let copy_from_context t ~cancelled ~log op ~user ~src_dir ?dst_dir id =
   (* If the sending thread finishes (or fails), close the writing end
@@ -312,23 +306,13 @@ let copy_from_build t ~cancelled ~log op ~user ~workdir ?dst_dir ~from_id id =
   let kill_exn exn = let+ () = kill () in raise exn in
   let tarball ~tar () =
     Os.with_pipe_to_child @@ fun ~r:files_from ~w:files_from_out ->
-    Os.with_pipe_from_child @@ fun ~r:stderr_in ~w:stderr_out ->
-    let proc = tarball_from_build t ~files_from ~stderr_out ~tar workdir user from_id in
+    let proc = tarball_from_build ~log t ~files_from ~tar workdir user from_id in
     let f () = Os.ensure_closed_lwt files_from_out in
     let send = Lwt.try_bind (fun () ->
         let* () = manifest_files_from op files_from_out in
         f ())
         f kill_exn in
     let* () = Lwt_switch.add_hook_or_exec (Some switch) f in
-    let rec read_stderr () =
-      let buf = Bytes.create 4096 in
-      let* n = Lwt_unix.read stderr_in buf 0 (Bytes.length buf) in
-      match n with
-      | 0 -> Lwt.return_unit
-      | _n -> Logs.debug (fun f -> f "tarball_from_build: %s" (Bytes.to_string buf));
-        read_stderr ()
-    in
-    let* () = read_stderr () in
     let* result = proc in
     let* () = send in
     Lwt.return result
@@ -359,14 +343,14 @@ let clean_docker ?(docker_data=false) dir =
   let* () =
     if docker_data then begin
       Log.info (fun f -> f "Removing left-over Docker containers");
-      let* containers = Docker.obuilder_containers () in
-      let* () = if containers <> [] then Docker.rm containers else Lwt.return_unit in
+      let* containers = Docker.Cmd.obuilder_containers () in
+      let* () = if containers <> [] then Docker.Cmd.rm containers else Lwt.return_unit in
       Log.info (fun f -> f "Removing left-over Docker images");
-      let* images = Docker.obuilder_images () in
-      let* () =  if images <> [] then Docker.rmi images else Lwt.return_unit in
+      let* images = Docker.Cmd.obuilder_images () in
+      let* () =  if images <> [] then Docker.Cmd.rmi images else Lwt.return_unit in
       Log.info (fun f -> f "Removing left-over Docker volumes");
-      let* volumes = Docker.obuilder_volumes () in
-      let* _ = if volumes <> [] then Docker.volume (`Remove volumes) else Lwt.return "" in
+      let* volumes = Docker.Cmd.obuilder_volumes () in
+      let* _ = if volumes <> [] then Docker.Cmd.volume (`Remove volumes) else Lwt.return "" in
       Lwt.return_unit
     end else Lwt.return_unit in
   Sys.readdir dir
@@ -411,8 +395,8 @@ let create_tar_volume (t:t) =
   Log.info (fun f -> f "Preparing tar volume...");
   let name = Docker.obuilder_volume () in
   let vol = `Docker_volume name and img = `Docker_image name in
-  let* _ = Docker.volume (`Create vol) in
-  let* mount_point = Docker.mount_point vol in
+  let* _ = Docker.Cmd.volume (`Create vol) in
+  let* mount_point = Docker.Cmd.mount_point vol in
 
   let copy_static_file ?(perm=0o400) file =
     let contents = Option.get (Static_files.read file) in
@@ -453,7 +437,7 @@ let create_tar_volume (t:t) =
         "--isolation"; List.assoc t.docker_isolation isolations;
         "--network"; t.docker_network;
       ] in
-      Docker.build docker_argv img temp_dir
+      Docker.Cmd.build docker_argv img temp_dir
     in
 
     let config =
@@ -470,8 +454,8 @@ let create_tar_volume (t:t) =
         ()
     in
     let docker_args, args = Docker_config.make config t in
-    let* () = Docker.run ~rm:true docker_args img args in
-    Docker.image (`Remove img)
+    let* () = Docker.Cmd.run ~rm:true docker_args img args in
+    Docker.Cmd.image (`Remove img)
   else Lwt.return_unit
 
 let create ?(clean=false) ~state_dir (c : config) =
@@ -479,7 +463,7 @@ let create ?(clean=false) ~state_dir (c : config) =
   let* () = clean_docker ~docker_data:clean state_dir in
   let t = { state_dir; docker_cpus = c.cpus; docker_isolation = c.isolation;
             docker_memory = c.memory; docker_network = c.network; } in
-  let* volume_exists = Docker.exists (`Docker_volume (Docker.obuilder_volume ())) in
+  let* volume_exists = Docker.Cmd.exists (`Docker_volume (Docker.obuilder_volume ())) in
   let* () = if Result.is_error volume_exists then create_tar_volume t else Lwt.return_unit in
   Lwt.return t
 

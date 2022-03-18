@@ -42,157 +42,278 @@ let rec setup_command ~entp ~cmd =
 
 let extract_name = function `Docker_image name | `Docker_container name | `Docker_volume name -> name
 
-let pread' ?stderr argv =
-  Os.pread ?stderr  ("docker" :: argv)
+let pread ?stderr argv =
+  let stderr = Option.value ~default:(`FD_move_safely Os.stderr) stderr in
+  Os.pread ~stderr ("docker" :: argv)
 
-let pread_result' ?stderr argv =
+let pread_result ?stdin ?stderr argv =
   let cmd = "docker" :: argv in
   let pp f = Os.pp_cmd f ("", cmd) in
-  Os.pread_result ~pp ?stderr cmd
+  let stdin = Option.value ~default:`Dev_null stdin in
+  let stderr = Option.value ~default:(`FD_move_safely Os.stderr) stderr in
+  Os.pread_result ~pp ~stdin ~stderr cmd
 
 let exec' ?stdin ?stdout ?stderr ?is_success argv =
-  Os.exec ?stdin ?stdout ?stderr ?is_success ("docker" :: argv)
+  let stdin = Option.value ~default:`Dev_null stdin in
+  let stdout = Option.value ~default:(`FD_move_safely Os.stdout) stdout in
+  let stderr = Option.value ~default:(`FD_move_safely Os.stderr) stderr in
+  Os.exec ~stdin ~stdout ~stderr ?is_success ("docker" :: argv)
 
 let exec_result' ?stdin ?stdout ?stderr ?is_success argv =
   let cmd = "docker" :: argv in
   let pp f = Os.pp_cmd f ("", cmd) in
-  Os.exec_result ?stdin ?stdout ?stderr ?is_success ~pp cmd
+  let stdin = Option.value ~default:`Dev_null stdin in
+  let stdout = Option.value ~default:(`FD_move_safely Os.stdout) stdout in
+  let stderr = Option.value ~default:(`FD_move_safely Os.stderr) stderr in
+  Os.exec_result ~stdin ~stdout ~stderr ?is_success ~pp cmd
 
-let create ?stderr (`Docker_image base) =
-  pread' ?stderr ("create" :: ["--"; base])
+module Cmd = struct
+  type 'a log = ?stdout:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
+                ?stderr:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
+                'a
+  type 'a logerr = ?stderr:[ `Dev_null | `FD_move_safely of Os.unix_fd ] ->
+                   'a
 
-let export ?stdout (`Docker_container id) =
-  exec' ?stdout ["export"; "--"; id]
+  let create ?stderr (`Docker_image base) =
+    pread ?stderr ("create" :: ["--"; base])
 
-let image ?stdout (`Remove (`Docker_image id)) =
-  exec' ?stdout ["image"; "rm"; id]
+  let export ?stdout ?stderr (`Docker_container id) =
+    exec' ?stdout ?stderr ["export"; "--"; id]
 
-let rm ?stdout containers =
-  exec' ?stdout ("rm" :: "--force" :: "--" :: (List.rev_map extract_name containers))
+  let image ?stdout ?stderr (`Remove (`Docker_image id)) =
+    exec' ?stdout ?stderr ["image"; "rm"; id]
 
-let tag ?stdout ?stderr (`Docker_image source) (`Docker_image target) =
-  exec' ?stdout ?stderr ["tag"; source; target]
+  let rm ?stdout ?stderr containers =
+    exec' ?stdout ?stderr ("rm" :: "--force" :: "--" :: (List.rev_map extract_name containers))
 
-let commit ?stdout (`Docker_image base_image) (`Docker_container container) (`Docker_image target_image) =
-  (* Restore CMD and ENTRYPOINT *)
-  let* entrypoint = pread' ["inspect"; "--type=image"; "--format={{json .Config.Entrypoint }}"; "--"; base_image] in
-  let* cmd = pread' ["inspect"; "--type=image"; "--format={{json .Config.Cmd }}"; "--"; base_image] in
-  let entrypoint, cmd = String.trim entrypoint, String.trim cmd in
-  let argv = [ "--"; container; target_image ] in
-  let argv = if entrypoint = "null" then argv else ("--change=ENTRYPOINT " ^ entrypoint) :: argv in
-  let argv = if cmd = "null" then argv else ("--change=CMD " ^ cmd) :: argv in
-  exec' ?stdout ("commit" :: argv)
+  let tag ?stdout ?stderr (`Docker_image source) (`Docker_image target) =
+    exec' ?stdout ?stderr ["tag"; source; target]
 
-let pull ?stderr (`Docker_image base) =
-  exec' ?stderr ["pull"; base]
+  let commit ?stdout ?stderr (`Docker_image base_image) (`Docker_container container) (`Docker_image target_image) =
+    (* Restore CMD and ENTRYPOINT *)
+    let* entrypoint = pread ["inspect"; "--type=image"; "--format={{json .Config.Entrypoint }}"; "--"; base_image] in
+    let* cmd = pread ["inspect"; "--type=image"; "--format={{json .Config.Cmd }}"; "--"; base_image] in
+    let entrypoint, cmd = String.trim entrypoint, String.trim cmd in
+    let argv = [ "--"; container; target_image ] in
+    let argv = if entrypoint = "null" then argv else ("--change=ENTRYPOINT " ^ entrypoint) :: argv in
+    let argv = if cmd = "null" then argv else ("--change=CMD " ^ cmd) :: argv in
+    exec' ?stdout ?stderr ("commit" :: argv)
 
-let exists id =
-  let argv = match id with
-    | `Docker_container id -> ["inspect"; "--type=container"; "--"; id]
-    | `Docker_image id -> ["inspect"; "--type=image"; "--"; id]
-    | `Docker_volume id -> ["volume"; "inspect"; "--"; id]
-  in
-  exec_result' ~stdout:`Dev_null ~stderr:`Dev_null argv
+  let pull ?stdout ?stderr (`Docker_image base) =
+    exec' ?stdout ?stderr ["pull"; base]
 
-let build docker_argv (`Docker_image image) context_path =
-  exec' ("build" :: docker_argv @ ["-t"; image; context_path])
+  let exists ?stdout ?stderr id =
+    let argv = match id with
+      | `Docker_container id -> ["inspect"; "--type=container"; "--"; id]
+      | `Docker_image id -> ["inspect"; "--type=image"; "--"; id]
+      | `Docker_volume id -> ["volume"; "inspect"; "--"; id]
+    in
+    exec_result' ?stdout ?stderr argv
 
-let run' ?stdin ?name ~rm ~docker_argv image argv =
-  let docker_argv = if rm then "--rm" :: docker_argv else docker_argv in
-  let docker_argv = match name with
-    | Some (`Docker_container name) -> "--name" :: name :: docker_argv
-    | None -> docker_argv in
-  let docker_argv = match stdin with
-    | Some (`FD_move_safely _) -> "-i" :: docker_argv
-    | _ -> docker_argv in
-  "run" :: docker_argv @ image :: argv
+  let build ?stdout ?stderr docker_argv (`Docker_image image) context_path =
+    exec' ?stdout ?stderr ("build" :: docker_argv @ ["-t"; image; context_path])
 
-let run ?stdin ?stdout ?stderr ?is_success ?name ?(rm=false) docker_argv (`Docker_image image) argv =
-  let argv = run' ?stdin ?name ~rm ~docker_argv image argv in
-  exec' ?stdin ?stdout ?stderr ?is_success argv
+  let run_argv ?stdin ?name ~rm ~docker_argv image argv =
+    let docker_argv = if rm then "--rm" :: docker_argv else docker_argv in
+    let docker_argv = match name with
+      | Some (`Docker_container name) -> "--name" :: name :: docker_argv
+      | None -> docker_argv in
+    let docker_argv = match stdin with
+      | Some (`FD_move_safely _) -> "-i" :: docker_argv
+      | _ -> docker_argv in
+    "run" :: docker_argv @ image :: argv
 
-let run_result ?stdin ?stdout ?stderr ?name ?(rm=false) docker_argv (`Docker_image image) argv =
-  let argv = run' ?stdin ?name ~rm ~docker_argv image argv in
-  exec_result' ?stdin ?stdout ?stderr argv
+  let run ?stdin ?stdout ?stderr ?is_success ?name ?(rm=false) docker_argv (`Docker_image image) argv =
+    let argv = run_argv ?stdin ?name ~rm ~docker_argv image argv in
+    exec' ?stdin ?stdout ?stderr ?is_success argv
 
-let run_pread_result ?stderr ?name ?(rm=false) docker_argv (`Docker_image image) argv =
-  let argv = run' ?name ~rm ~docker_argv image argv in
-  pread_result' ?stderr argv
+  let run_result ?stdin ?stdout ?stderr  ?name ?(rm=false) docker_argv (`Docker_image image) argv =
+    let argv = run_argv ?stdin ?name ~rm ~docker_argv image argv in
+    exec_result' ?stdin ?stdout ?stderr argv
 
-let stop (`Docker_container name) =
-  exec_result' ["stop"; name]
+  let run_pread_result ?stdin ?stderr ?name ?(rm=false) docker_argv (`Docker_image image) argv =
+    let argv = run_argv ?name ~rm ~docker_argv image argv in
+    pread_result ?stdin ?stderr argv
 
-let volume = function
-  | `Create (`Docker_volume name) -> pread' ("volume" :: "create" :: "--" :: name :: [])
-  | `Inspect (volumes, `Mountpoint) ->
-    let volumes = List.rev_map extract_name volumes in
-    let format = "{{ .Mountpoint }}" in
-    pread' ("volume" :: "inspect" :: "--format" :: format :: "--" :: volumes)
-  | `List (filter) ->
-    let filter = match filter with None -> [] | Some filter -> ["--filter"; filter] in
-    pread' ("volume" :: "ls" :: "--quiet" :: filter)
-  | `Remove volumes ->
-    let volumes = List.rev_map extract_name volumes in
-    pread' ("volume" :: "rm" :: "--" :: volumes)
+  let run' = run
+  let run_result' = run_result
 
-let volume_containers (`Docker_volume name) =
-  let+ names = pread' (["ps"; "-a"; "--filter"; "volume=" ^ name; "--format={{ .Names }}"]) in
-  names |> String.trim |> String.split_on_char '\n'
-  |> List.map (fun vol -> `Docker_volume vol)
+  let stop ?stdout ?stderr (`Docker_container name) =
+    exec_result' ?stdout ?stderr ["stop"; name]
 
-let mount_point name =
-  let* s = volume (`Inspect ([name], `Mountpoint)) in
-  Lwt.return (String.trim s)
+  let volume ?stderr = function
+    | `Create (`Docker_volume name) -> pread ("volume" :: "create" :: "--" :: name :: [])
+    | `Inspect (volumes, `Mountpoint) ->
+      let volumes = List.rev_map extract_name volumes in
+      let format = "{{ .Mountpoint }}" in
+      pread ?stderr ("volume" :: "inspect" :: "--format" :: format :: "--" :: volumes)
+    | `List (filter) ->
+      let filter = match filter with None -> [] | Some filter -> ["--filter"; filter] in
+      pread ?stderr ("volume" :: "ls" :: "--quiet" :: filter)
+    | `Remove volumes ->
+      let volumes = List.rev_map extract_name volumes in
+      pread ("volume" :: "rm" :: "--" :: volumes)
 
-let rmi ?stdout images =
-  exec' ?stdout ("rmi" :: (List.rev_map extract_name images))
+  let volume_containers ?stderr (`Docker_volume name) =
+    let+ names = pread ?stderr (["ps"; "-a"; "--filter"; "volume=" ^ name; "--format={{ .Names }}"]) in
+    names |> String.trim |> String.split_on_char '\n'
+    |> List.map (fun vol -> `Docker_volume vol)
 
-let manifest ?stdout ?stderr = function
-  | `Create (`Docker_image name, manifests) ->
-    exec_result' ?stdout ?stderr ("manifest" :: "create" :: name :: (List.rev_map extract_name manifests))
-  | `Inspect (`Docker_image name) ->
-    exec_result' ?stdout ?stderr ["manifest"; "inspect"; name]
-  | `Remove manifests ->
-    exec_result' ?stdout ?stderr ("manifest" :: "rm" :: (List.rev_map extract_name manifests))
+  let mount_point ?stderr name =
+    let* s = volume ?stderr (`Inspect ([name], `Mountpoint)) in
+    Lwt.return (String.trim s)
 
-let obuilder_images () =
-  let* images = pread' ["images"; "--format={{ .Repository }}"; !prefix ^ "*"] in
-  String.split_on_char '\n' images
-  |> List.filter_map (function "" -> None | id -> Some (`Docker_image id))
-  |> Lwt.return
+  let rmi ?stdout ?stderr images =
+    exec' ?stdout ?stderr ("rmi" :: (List.rev_map extract_name images))
 
-let obuilder_containers () =
-  let* containers = pread' ["container"; "ls"; "--all"; "--filter"; "name=^" ^ !prefix; "-q"] in
-  String.split_on_char '\n' containers
-  |> List.filter_map (function "" -> None | id -> Some (`Docker_container id))
-  |> Lwt.return
+  let manifest ?stdout ?stderr = function
+    | `Create (`Docker_image name, manifests) ->
+      exec_result' ?stdout ?stderr ("manifest" :: "create" :: name :: (List.rev_map extract_name manifests))
+    | `Inspect (`Docker_image name) ->
+      exec_result' ?stdout ?stderr ["manifest"; "inspect"; name]
+    | `Remove manifests ->
+      exec_result' ?stdout ?stderr ("manifest" :: "rm" :: (List.rev_map extract_name manifests))
 
-let obuilder_volumes ?(prefix=(!prefix)) () =
-  let* volumes = volume (`List (Some ("name=^" ^ prefix))) in
-  String.split_on_char '\n' volumes
-  |> List.filter_map (function "" -> None | id -> Some (`Docker_volume id))
-  |> Lwt.return
+  let obuilder_images ?stderr () =
+    let* images = pread ?stderr ["images"; "--format={{ .Repository }}"; !prefix ^ "*"] in
+    String.split_on_char '\n' images
+    |> List.filter_map (function "" -> None | id -> Some (`Docker_image id))
+    |> Lwt.return
 
-let obuilder_caches_tmp () =
-  obuilder_volumes ~prefix:(cache_prefix () ^ "tmp-") ()
+  let obuilder_containers ?stderr () =
+    let* containers = pread ?stderr ["container"; "ls"; "--all"; "--filter"; "name=^" ^ !prefix; "-q"] in
+    String.split_on_char '\n' containers
+    |> List.filter_map (function "" -> None | id -> Some (`Docker_container id))
+    |> Lwt.return
+
+  let obuilder_volumes ?stderr ?(prefix=(!prefix)) () =
+    let* volumes = volume ?stderr (`List (Some ("name=^" ^ prefix))) in
+    String.split_on_char '\n' volumes
+    |> List.filter_map (function "" -> None | id -> Some (`Docker_volume id))
+    |> Lwt.return
+
+  let obuilder_caches_tmp ?stderr () =
+    obuilder_volumes ?stderr ~prefix:(cache_prefix () ^ "tmp-") ()
+end
+
+
+module Cmd_log = struct
+
+  type 'a log = log:Build_log.t -> 'a
+  type 'a logerr = log:Build_log.t -> 'a
+
+  let with_stderr_log ~log fn =
+    Os.with_pipe_from_child @@ fun ~r:err_r ~w:err_w ->
+    let stderr = `FD_move_safely err_w in
+    let copy_log = Build_log.copy ~src:err_r ~dst:log in
+    let* r = fn ~stderr in
+    let+ () = copy_log in
+    r
+
+  let with_log ~log fn =
+    Os.with_pipe_from_child @@ fun ~r:out_r ~w:out_w ->
+    let stdout = `FD_move_safely out_w in
+    let stderr = stdout in
+    let copy_log = Build_log.copy ~src:out_r ~dst:log in
+    let* r = fn ~stdout ~stderr in
+    let+ () = copy_log in
+    r
+
+  let pull ~log base =
+    with_log ~log (fun ~stdout ~stderr -> Cmd.pull ~stdout ~stderr base)
+
+  let export ~log container =
+    with_log ~log (fun ~stdout ~stderr -> Cmd.export ~stdout ~stderr container)
+
+  let image ~log cmd =
+    with_log ~log (fun ~stdout ~stderr -> Cmd.image ~stdout ~stderr cmd)
+
+  let rm ~log containers =
+    with_log ~log (fun ~stdout ~stderr -> Cmd.rm ~stdout ~stderr containers)
+
+  let rmi ~log images =
+    with_log ~log (fun ~stdout ~stderr -> Cmd.rmi ~stdout ~stderr images)
+
+  let tag ~log source target =
+    with_log ~log (fun ~stdout ~stderr -> Cmd.tag ~stdout ~stderr source target)
+
+  let commit ~log base_image container target_image =
+    with_log ~log (fun ~stdout ~stderr ->
+        Cmd.commit ~stdout ~stderr base_image container target_image)
+
+  let volume ~log cmd =
+    with_stderr_log ~log (fun ~stderr -> Cmd.volume ~stderr cmd)
+
+  let volume_containers ~log volume =
+    with_stderr_log ~log (fun ~stderr -> Cmd.volume_containers ~stderr volume)
+
+  let mount_point ~log volume =
+    with_stderr_log ~log (fun ~stderr -> Cmd.mount_point ~stderr volume)
+
+  let build ~log docker_argv image context_path =
+    with_log ~log (fun ~stdout ~stderr ->
+        Cmd.build ~stdout ~stderr docker_argv image context_path)
+
+  let stop ~log name =
+    with_log ~log (fun ~stdout ~stderr -> Cmd.stop ~stdout ~stderr name)
+
+  let manifest ~log cmd =
+    with_log ~log (fun ~stdout ~stderr -> Cmd.manifest ~stdout ~stderr cmd)
+
+  let exists ~log cmd =
+    with_log ~log (fun ~stdout ~stderr -> Cmd.exists ~stdout ~stderr cmd)
+
+  let run ?stdin ~log ?is_success ?name ?rm docker_argv image argv =
+    with_log ~log (fun ~stdout ~stderr ->
+        Cmd.run ?stdin ~stdout ~stderr ?is_success ?name ?rm docker_argv image argv)
+
+  let run' ?stdin ?stdout ~log ?is_success ?name ?rm docker_argv image argv =
+    with_stderr_log ~log (fun ~stderr ->
+        Cmd.run' ?stdin ?stdout ~stderr ?is_success ?name ?rm docker_argv image argv)
+
+  let run_result ?stdin ~log ?name ?rm docker_argv image argv =
+    with_log ~log (fun ~stdout ~stderr ->
+        Cmd.run_result ?stdin ~stdout ~stderr ?name ?rm docker_argv image argv)
+
+  let run_result' ?stdin ?stdout ~log ?name ?rm docker_argv image argv =
+    with_stderr_log ~log (fun ~stderr ->
+        Cmd.run_result' ?stdin ?stdout ~stderr ?name ?rm docker_argv image argv)
+
+  let run_pread_result ?stdin ~log ?name ?rm docker_argv image argv =
+    with_stderr_log ~log (fun ~stderr ->
+        Cmd.run_pread_result ?stdin ~stderr ?name ?rm docker_argv image argv)
+
+  let obuilder_images ~log () =
+    with_stderr_log ~log (fun ~stderr -> Cmd.obuilder_images ~stderr ())
+
+  let obuilder_containers ~log () =
+    with_stderr_log ~log (fun ~stderr -> Cmd.obuilder_containers ~stderr ())
+
+  let obuilder_volumes ~log ?prefix () =
+    with_stderr_log ~log (fun ~stderr -> Cmd.obuilder_volumes ~stderr ?prefix ())
+
+  let obuilder_caches_tmp ~log () =
+    with_stderr_log ~log (fun ~stderr -> Cmd.obuilder_caches_tmp ~stderr ())
+end
+
 
 let with_container ~log base fn =
   let* cid = Os.with_pipe_from_child (fun ~r ~w ->
       (* We might need to do a pull here, so log the output to show progress. *)
       let copy = Build_log.copy ~src:r ~dst:log in
-      let* cid = create ~stderr:(`FD_move_safely w) (`Docker_image base) in
+      let* cid = Cmd.create ~stderr:(`FD_move_safely w) (`Docker_image base) in
       let+ () = copy in
       String.trim cid
     )
   in
   Lwt.finalize
     (fun () -> fn cid)
-    (fun () -> rm ~stdout:`Dev_null [`Docker_container cid])
+    (fun () -> Cmd.rm ~stdout:`Dev_null [`Docker_container cid])
 
 module Extract = struct
   let export_env base : Config.env Lwt.t =
     let+ env =
-      pread' ["image"; "inspect";
+      pread ["image"; "inspect";
               "--format"; {|{{range .Config.Env}}{{print . "\x00"}}{{end}}|};
               "--"; base] in
     String.split_on_char '\x00' env
@@ -207,7 +328,7 @@ module Extract = struct
   let fetch ~log ~rootfs base =
     let* () = with_container ~log base (fun cid ->
         Os.with_pipe_between_children @@ fun ~r ~w ->
-        let exporter = export ~stdout:(`FD_move_safely w) (`Docker_container cid) in
+        let exporter = Cmd.export ~stdout:(`FD_move_safely w) (`Docker_container cid) in
         let tar = Os.sudo ~stdin:(`FD_move_safely r) ["tar"; "-C"; rootfs; "-xf"; "-"] in
         let* () = exporter in
         tar
