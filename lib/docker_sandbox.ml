@@ -10,7 +10,6 @@ type isolation = [ `HyperV | `Process | `Default ] [@@deriving sexp]
 let isolations : (isolation * string) list = [(`HyperV, "hyperv"); (`Process, "process"); (`Default, "default")]
 
 type t = {
-  state_dir : string;
   docker_cpus : float;
   docker_isolation : isolation;
   docker_memory : string option;
@@ -461,7 +460,7 @@ let create_tar_volume (t:t) =
 let create ?(clean=false) ~state_dir (c : config) =
   Os.ensure_dir state_dir;
   let* () = clean_docker ~docker_data:clean state_dir in
-  let t = { state_dir; docker_cpus = c.cpus; docker_isolation = c.isolation;
+  let t = { docker_cpus = c.cpus; docker_isolation = c.isolation;
             docker_memory = c.memory; docker_network = c.network; } in
   let* volume_exists = Docker.Cmd.exists (`Docker_volume (Docker.obuilder_volume ())) in
   let* () = if Result.is_error volume_exists then create_tar_volume t else Lwt.return_unit in
