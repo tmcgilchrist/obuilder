@@ -27,7 +27,9 @@
   sqlite3
   (obuilder-spec (= :version))
   (ocaml (>= 4.10.0))
+  (bisect_ppx :dev)
   (alcotest-lwt :with-test))
+  
  (conflicts
   (result (< "1.5"))))
 (package

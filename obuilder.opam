@@ -25,6 +25,7 @@ depends: [
   "sqlite3"
   "obuilder-spec" {= version}
   "ocaml" {>= "4.10.0"}
+  "bisect_ppx" {dev}
   "alcotest-lwt" {with-test}
   "odoc" {with-doc}
 ]
